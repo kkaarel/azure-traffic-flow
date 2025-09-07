@@ -10,6 +10,9 @@ from PIL import Image
 import pandas as pd
 import io
 
+
+st.set_page_config(page_title="Traffic Flow Analyzer", page_icon="🚗", layout="wide")
+
 subscription_key = st.secrets["SUBSCRIPTION_KEY"]
 maps_search_client = MapsSearchClient(
    credential=AzureKeyCredential(subscription_key)
@@ -131,22 +134,23 @@ def estimate_cars_from_traffic_analysis(image_data, zoom_level):
     width, height = img.size
     
     # Calibration factors based on zoom level
+    # Each zoom level doubles the detail, so pixels_per_car should halve
     # These are rough estimates and would need real-world calibration
     zoom_factors = {
-        12: {'pixels_per_car': 60, 'road_coverage': 0.15},
-        13: {'pixels_per_car': 40, 'road_coverage': 0.20},
-        14: {'pixels_per_car': 30, 'road_coverage': 0.25},
-        15: {'pixels_per_car': 20, 'road_coverage': 0.30},
-        16: {'pixels_per_car': 15, 'road_coverage': 0.35},
-        17: {'pixels_per_car': 10, 'road_coverage': 0.40},
-        18: {'pixels_per_car': 8, 'road_coverage': 0.45},
-        19: {'pixels_per_car': 6, 'road_coverage': 0.50},
-        20: {'pixels_per_car': 4, 'road_coverage': 0.55},
-        21: {'pixels_per_car': 3, 'road_coverage': 0.60},
-        22: {'pixels_per_car': 2, 'road_coverage': 0.65}
+        12: {'pixels_per_car': 100, 'tile_size_km': 2.4},  # ~2.4km per tile
+        13: {'pixels_per_car': 80, 'tile_size_km': 1.2},   # ~1.2km per tile
+        14: {'pixels_per_car': 60, 'tile_size_km': 0.6},   # ~0.6km per tile
+        15: {'pixels_per_car': 40, 'tile_size_km': 0.3},   # ~0.3km per tile
+        16: {'pixels_per_car': 30, 'tile_size_km': 0.15},  # ~0.15km per tile
+        17: {'pixels_per_car': 20, 'tile_size_km': 0.075}, # ~0.075km per tile
+        18: {'pixels_per_car': 15, 'tile_size_km': 0.0375},# ~0.0375km per tile
+        19: {'pixels_per_car': 10, 'tile_size_km': 0.01875},# ~0.01875km per tile
+        20: {'pixels_per_car': 8, 'tile_size_km': 0.009375},# ~0.009375km per tile
+        21: {'pixels_per_car': 6, 'tile_size_km': 0.0046875},# ~0.0046875km per tile
+        22: {'pixels_per_car': 4, 'tile_size_km': 0.00234375} # ~0.00234375km per tile
     }
     
-    factor = zoom_factors.get(zoom_level, zoom_factors[18])
+    factor = zoom_factors.get(zoom_level, zoom_factors[18])  # Default to zoom 18 if zoom_level not found
     
     # Calculate traffic pixels for each category
     total_pixels = width * height
@@ -155,11 +159,19 @@ def estimate_cars_from_traffic_analysis(image_data, zoom_level):
     light_traffic_pixels = (analysis['light_traffic'] / 100) * total_pixels
     
     # Estimate cars based on traffic density and zoom level
-    # Heavy traffic: more cars per pixel (congested)
-    # Light traffic: fewer cars per pixel (free flowing)
-    heavy_cars = int(heavy_traffic_pixels / (factor['pixels_per_car'] * 0.7))  # More cars in heavy traffic
-    moderate_cars = int(moderate_traffic_pixels / factor['pixels_per_car'])
-    light_cars = int(light_traffic_pixels / (factor['pixels_per_car'] * 1.3))  # Fewer cars in light traffic
+    # Heavy traffic: more cars per pixel (congested, slower moving)
+    # Light traffic: fewer cars per pixel (free flowing, faster moving)
+    
+    # Adjust pixels_per_car based on traffic type
+    # Heavy traffic: cars are closer together (more cars per pixel)
+    # Light traffic: cars are more spread out (fewer cars per pixel)
+    heavy_pixels_per_car = factor['pixels_per_car'] * 0.8  # More cars in heavy traffic
+    moderate_pixels_per_car = factor['pixels_per_car']     # Standard density
+    light_pixels_per_car = factor['pixels_per_car'] * 1.2  # Fewer cars in light traffic
+    
+    heavy_cars = int(heavy_traffic_pixels / heavy_pixels_per_car) if heavy_traffic_pixels > 0 else 0
+    moderate_cars = int(moderate_traffic_pixels / moderate_pixels_per_car) if moderate_traffic_pixels > 0 else 0
+    light_cars = int(light_traffic_pixels / light_pixels_per_car) if light_traffic_pixels > 0 else 0
     
     total_estimated_cars = heavy_cars + moderate_cars + light_cars
     
@@ -176,6 +188,8 @@ def estimate_cars_from_traffic_analysis(image_data, zoom_level):
         'traffic_coverage': round(traffic_coverage * 100, 1),
         'zoom_level': zoom_level,
         'image_size': f"{width}x{height}",
+        'tile_size_km': factor['tile_size_km'],
+        'pixels_per_car': factor['pixels_per_car'],
         'method': 'pixel_density_estimation'
     }
 
@@ -201,9 +215,9 @@ def get_traffic_flow_tile(longitude, latitude, zoom):
         response = requests.get(url, params=params, headers=headers)
         
         # Debug information
-        st.write(f"Status Code: {response.status_code}")
-        st.write(f"Content-Type: {response.headers.get('content-type', 'Unknown')}")
-        st.write(f"Content Length: {len(response.content)} bytes")
+      #  st.write(f"Status Code: {response.status_code}")
+      #  st.write(f"Content-Type: {response.headers.get('content-type', 'Unknown')}")
+      #  st.write(f"Content Length: {len(response.content)} bytes")
         
         if response.status_code == 204:
             st.warning("No traffic data available for this location and zoom level")
@@ -234,8 +248,10 @@ def get_traffic_flow_tile(longitude, latitude, zoom):
             st.error(f"Downloaded data is not a valid image: {e}")
             return None
         
-        st.success(f"Traffic tile downloaded successfully! Tile coords: ({x}, {y})")
-        st.image(response.content)
+       # st.success(f"Traffic tile downloaded successfully! Tile coords: ({x}, {y})")
+        flex = st.container(horizontal=True, horizontal_alignment="center")
+        
+        flex.image(response.content, caption=f"Traffic tile at zoom {zoom}, coords ({x}, {y})")
         
         return response.content
         
@@ -244,7 +260,7 @@ def get_traffic_flow_tile(longitude, latitude, zoom):
         return False
 
 
-def geocode(write_address):
+def geocode(write_address, zoom):
     from azure.core.credentials import AzureKeyCredential
     from azure.maps.search import MapsSearchClient
     import pandas as pd
@@ -263,8 +279,8 @@ def geocode(write_address):
                 'lon': [longitude]
             })
             st.title("Map, show the location")
-            st.map(df, zoom=18)
-            st.write(f"Coordinates: {longitude}, {latitude}")
+            st.map(df, zoom=zoom)
+            #st.write(f"Coordinates: {longitude}, {latitude}")
             
             # Return coordinates for use in traffic function
             return longitude, latitude
@@ -294,7 +310,7 @@ if __name__ == "__main__":
     if write_address and zoom:
        # with st.expander("Validate location on map"):
         st.write("Validating location on map")
-        x, y = geocode(write_address)  # Only call once
+        x, y = geocode(write_address, zoom)  # Only call once
         if x is not None and y is not None:
             result = get_traffic_flow_tile(x, y, zoom)
 
