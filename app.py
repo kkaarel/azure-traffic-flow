@@ -5,10 +5,10 @@ from azure.core.credentials import AzureKeyCredential
 from azure.maps.search import MapsSearchClient
 from azure.core.exceptions import HttpResponseError
 import math
-import cv2
 import numpy as np
 from PIL import Image
 import pandas as pd
+import io
 
 subscription_key = st.secrets["SUBSCRIPTION_KEY"]
 maps_search_client = MapsSearchClient(
@@ -41,35 +41,70 @@ def deg2num(lat_deg, lon_deg, zoom):
     
     return x, y
 
-def analyze_traffic_tile(image_path):
-    """Analyze traffic tile image to extract flow information"""
+def analyze_traffic_tile(image_data):
+    """Analyze traffic tile image to extract flow information using PIL only"""
     
-    # Load image
-    img = cv2.imread(image_path)
+    # Load image from bytes and convert to RGB if needed
+    img = Image.open(io.BytesIO(image_data))
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+    img_array = np.array(img)
     
-    # Convert to different color spaces for analysis
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    # Convert RGB to HSV manually (since we can't use cv2)
+    def rgb_to_hsv(rgb):
+        r, g, b = rgb[0]/255.0, rgb[1]/255.0, rgb[2]/255.0
+        max_val = max(r, g, b)
+        min_val = min(r, g, b)
+        diff = max_val - min_val
+        
+        # Calculate Hue
+        if diff == 0:
+            h = 0
+        elif max_val == r:
+            h = (60 * ((g - b) / diff) + 360) % 360
+        elif max_val == g:
+            h = (60 * ((b - r) / diff) + 120) % 360
+        else:
+            h = (60 * ((r - g) / diff) + 240) % 360
+        
+        # Calculate Saturation
+        s = 0 if max_val == 0 else diff / max_val
+        
+        # Calculate Value
+        v = max_val
+        
+        return h, s, v
     
-    # Define color ranges for different traffic levels
-    # (These would need to be calibrated based on Azure's color scheme)
-    red_lower = np.array([0, 50, 50])
-    red_upper = np.array([10, 255, 255])
+    # Convert image to HSV
+    hsv_array = np.zeros((img_array.shape[0], img_array.shape[1], 3), dtype=float)
+    for i in range(img_array.shape[0]):
+        for j in range(img_array.shape[1]):
+            hsv_array[i, j] = rgb_to_hsv(img_array[i, j])
     
-    yellow_lower = np.array([20, 50, 50])
-    yellow_upper = np.array([30, 255, 255])
+    # Define color ranges for different traffic levels in HSV
+    # Red: Hue 0-10 or 350-360, Saturation > 0.2, Value > 0.2
+    # Yellow: Hue 20-40, Saturation > 0.2, Value > 0.2  
+    # Green: Hue 40-80, Saturation > 0.2, Value > 0.2
     
-    green_lower = np.array([40, 50, 50])
-    green_upper = np.array([80, 255, 255])
+    red_pixels = 0
+    yellow_pixels = 0
+    green_pixels = 0
     
-    # Create masks for each traffic level
-    red_mask = cv2.inRange(hsv, red_lower, red_upper)
-    yellow_mask = cv2.inRange(hsv, yellow_lower, yellow_upper)
-    green_mask = cv2.inRange(hsv, green_lower, green_upper)
-    
-    # Count pixels for each traffic level
-    red_pixels = cv2.countNonZero(red_mask)
-    yellow_pixels = cv2.countNonZero(yellow_mask)
-    green_pixels = cv2.countNonZero(green_mask)
+    for i in range(hsv_array.shape[0]):
+        for j in range(hsv_array.shape[1]):
+            h, s, v = hsv_array[i, j]
+            
+            # Check if pixel meets minimum saturation and value thresholds
+            if s > 0.2 and v > 0.2:
+                # Red traffic (Hue 0-10 or 350-360)
+                if (h >= 0 and h <= 10) or (h >= 350 and h <= 360):
+                    red_pixels += 1
+                # Yellow traffic (Hue 20-40)
+                elif h >= 20 and h <= 40:
+                    yellow_pixels += 1
+                # Green traffic (Hue 40-80)
+                elif h >= 40 and h <= 80:
+                    green_pixels += 1
     
     total_pixels = red_pixels + yellow_pixels + green_pixels
     
@@ -129,26 +164,21 @@ def get_traffic_flow_tile(longitude, latitude, zoom):
         # Check if content is not empty
         if len(response.content) == 0:
             st.error("Received empty response")
-            return False
+            return None
         
-        # Save the image
-        with open('traffic_tile.png', 'wb') as f:
-            f.write(response.content)
-        
-        # Validate the saved image before displaying
+        # Validate the image data before processing
         try:
-            from PIL import Image
-            with Image.open('traffic_tile.png') as img:
-                img.verify()  # Verify it's a valid image
-                st.write(f"Image size: {img.size}")
+            img = Image.open(io.BytesIO(response.content))
+            img.verify()  # Verify it's a valid image
+            st.write(f"Image size: {img.size}")
         except Exception as e:
-            st.error(f"Downloaded file is not a valid image: {e}")
-            return False
+            st.error(f"Downloaded data is not a valid image: {e}")
+            return None
         
         st.success(f"Traffic tile downloaded successfully! Tile coords: ({x}, {y})")
-        st.image('traffic_tile.png')
+        st.image(response.content)
         
-        return True
+        return response.content
         
     except requests.exceptions.RequestException as e:
         st.error(f"Error fetching traffic data: {e}")
@@ -210,6 +240,7 @@ if __name__ == "__main__":
             result = get_traffic_flow_tile(x, y, zoom)
 
             if result:
-                st.dataframe(analyze_traffic_tile('traffic_tile.png'))
+                analysis = analyze_traffic_tile(result)
+                st.dataframe(pd.DataFrame([analysis]))
     else:
         st.error("Please enter an address")

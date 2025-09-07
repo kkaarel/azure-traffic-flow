@@ -2,7 +2,6 @@ streamlit
 requests
 azure-maps-search
 azure-core
-opencv-python
 numpy
 Pillow
 pandas
