@@ -378,8 +378,8 @@ def estimate_cars_from_traffic_analysis(image_data, zoom_level):
 
 def get_traffic_flow_tile(longitude, latitude, zoom):
     # Try multiple zoom levels to find the best available traffic data
-    # Start with higher zoom for precision, fall back to lower zoom if no data
-    zoom_levels = [min(zoom + 2, 16), zoom, max(zoom - 2, 8)]
+    # Start with user's selected zoom, then try nearby levels if no data
+    zoom_levels = [zoom, min(zoom + 1, 16), max(zoom - 1, 8)]
     
     url = "https://atlas.microsoft.com/traffic/flow/tile/png"
     headers = {'subscription-key': subscription_key}
