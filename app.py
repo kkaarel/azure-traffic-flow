@@ -377,65 +377,104 @@ def estimate_cars_from_traffic_analysis(image_data, zoom_level):
     }
 
 def get_traffic_flow_tile(longitude, latitude, zoom):
-    # Convert lat/lon to tile coordinates
-    x, y = deg2num(latitude, longitude, zoom)
-    
-    st.write(f"Requesting tile at zoom {zoom}, coords ({x}, {y})")
+    # Try multiple zoom levels to find the best available traffic data
+    # Start with higher zoom for precision, fall back to lower zoom if no data
+    zoom_levels = [min(zoom + 2, 16), zoom, max(zoom - 2, 8)]
     
     url = "https://atlas.microsoft.com/traffic/flow/tile/png"
-    params = {
-        'api-version': '1.0',
-        'style': 'absolute',
-        'zoom': zoom,
-        'x': x,
-        'y': y
-    }
-    headers = {
-        'subscription-key': subscription_key
-    }
+    headers = {'subscription-key': subscription_key}
     
-    try:
-        response = requests.get(url, params=params, headers=headers)
-                
-        if response.status_code == 204:
-            st.warning("No traffic data available for this location and zoom level")
-            st.info("Try a different zoom level or location where traffic data is available")
-            return False
-        elif response.status_code != 200:
-            st.error(f"API Error: {response.text}")
-            return False
+    for precision_zoom in zoom_levels:
+        # Convert lat/lon to tile coordinates at this zoom level
+        x, y = deg2num(latitude, longitude, precision_zoom)
         
-        # Check if response is actually an image
-        content_type = response.headers.get('content-type', '')
-        if 'image' not in content_type:
-            st.error(f"Expected image but got: {content_type}")
-            st.error(f"Response content: {response.text[:200]}...")
-            return False
+        st.write(f"Trying zoom {precision_zoom}, coords ({x}, {y})")
         
-        # Check if content is not empty
-        if len(response.content) == 0:
-            st.error("Received empty response")
-            return None
+        params = {
+            'api-version': '1.0',
+            'style': 'absolute',
+            'zoom': precision_zoom,
+            'x': x,
+            'y': y
+        }
         
-        # Validate the image data before processing
         try:
-            img = Image.open(io.BytesIO(response.content))
-            img.verify()  # Verify it's a valid image
-            st.write(f"Image size: {img.size}")
+            response = requests.get(url, params=params, headers=headers)
+            
+            if response.status_code == 200 and 'image' in response.headers.get('content-type', ''):
+                # Success! We found traffic data at this zoom level
+                from PIL import Image
+                import io
+                
+                image = Image.open(io.BytesIO(response.content))
+                
+                # For better centering, create a 2x2 grid if we're at a lower zoom
+                if precision_zoom <= zoom:
+                    # Get 2x2 grid for better centering
+                    tiles = []
+                    for dy in [0, 1]:
+                        for dx in [0, 1]:
+                            tiles.append((x + dx, y + dy))
+                    
+                    # Fetch all 4 tiles
+                    tile_images = [image]  # Start with the one we already have
+                    for tile_x, tile_y in tiles[1:]:  # Skip the first one we already have
+                        tile_params = params.copy()
+                        tile_params['x'] = tile_x
+                        tile_params['y'] = tile_y
+                        
+                        try:
+                            tile_response = requests.get(url, params=tile_params, headers=headers)
+                            if tile_response.status_code == 200 and 'image' in tile_response.headers.get('content-type', ''):
+                                tile_img = Image.open(io.BytesIO(tile_response.content))
+                                tile_images.append(tile_img)
+                            else:
+                                tile_images.append(Image.new('RGB', (256, 256), (0, 0, 0)))
+                        except:
+                            tile_images.append(Image.new('RGB', (256, 256), (0, 0, 0)))
+                    
+                    # Create composite if we have multiple tiles
+                    if len(tile_images) > 1:
+                        composite = Image.new('RGB', (512, 512), (0, 0, 0))
+                        composite.paste(tile_images[0], (0, 0))      # Top-left
+                        composite.paste(tile_images[1], (256, 0))    # Top-right  
+                        composite.paste(tile_images[2], (0, 256))    # Bottom-left
+                        composite.paste(tile_images[3], (256, 256))  # Bottom-right
+                        
+                        # Crop center area
+                        crop_size = 256
+                        left = (512 - crop_size) // 2
+                        top = (512 - crop_size) // 2
+                        cropped = composite.crop((left, top, left + crop_size, top + crop_size))
+                        
+                        st.image(cropped, caption=f"Traffic Flow - 2x2 Grid at Zoom {precision_zoom}")
+                        st.write(f"Image size: {cropped.size}")
+                        
+                        # Convert back to bytes
+                        img_bytes = io.BytesIO()
+                        cropped.save(img_bytes, format='PNG')
+                        return img_bytes.getvalue()
+                
+                # Single tile display
+                st.image(image, caption=f"Traffic Flow Tile - Zoom {precision_zoom}")
+                st.write(f"Image size: {image.size}")
+                return response.content
+                
+            elif response.status_code == 204:
+                st.write(f"No traffic data at zoom {precision_zoom}, trying next level...")
+                continue
+            else:
+                st.write(f"Error at zoom {precision_zoom}: {response.status_code}, trying next level...")
+                continue
+                
         except Exception as e:
-            st.error(f"Downloaded data is not a valid image: {e}")
-            return None
-        
-       # st.success(f"Traffic tile downloaded successfully! Tile coords: ({x}, {y})")
-        flex = st.container(horizontal=True, horizontal_alignment="center")
-        
-        flex.image(response.content, caption=f"Traffic tile at zoom {zoom}, coords ({x}, {y})")
-        
-        return response.content
-        
-    except requests.exceptions.RequestException as e:
-        st.error(f"Error fetching traffic data: {e}")
-        return False
+            st.write(f"Exception at zoom {precision_zoom}: {str(e)}, trying next level...")
+            continue
+    
+    # If we get here, no zoom level worked
+    st.error("No traffic data available at any zoom level")
+    st.info("Traffic data may not be available for this location")
+    return None
 
 
 def geocode(write_address, zoom):
@@ -488,9 +527,9 @@ if __name__ == "__main__":
     if write_address and zoom:
        # with st.expander("Validate location on map"):
         st.write("Validating location on map")
-        x, y = geocode(write_address, zoom)  # Only call once
-        if x is not None and y is not None:
-            result = get_traffic_flow_tile(x, y, zoom)
+        longitude, latitude = geocode(write_address, zoom)  # Only call once
+        if longitude is not None and latitude is not None:
+            result = get_traffic_flow_tile(longitude, latitude, zoom)
 
             if result:
                 # Traffic analysis
@@ -528,7 +567,7 @@ if __name__ == "__main__":
                 st.write("Analyzing traffic density per street...")
                 
                 # Get tile coordinates for street analysis
-                tile_x, tile_y = deg2num(y, x, zoom)
+                tile_x, tile_y = deg2num(latitude, longitude, zoom)
                 
                 # Detect traffic hotspots
                 hotspots = detect_traffic_hotspots(analysis['pixel_data'], analysis['image_size'])
