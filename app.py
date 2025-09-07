@@ -182,7 +182,7 @@ def detect_traffic_hotspots(pixel_data, image_size, grid_size=8):
     
     return hotspots
 
-def pixel_to_lat_lon(pixel_x, pixel_y, tile_x, tile_y, zoom):
+def pixel_to_lat_lon(pixel_x, pixel_y, tile_x, tile_y, zoom, image_size=(256, 256)):
     """Convert pixel coordinates within a tile to lat/lon coordinates"""
     # Convert tile coordinates back to lat/lon bounds
     n = 2.0 ** zoom
@@ -195,10 +195,16 @@ def pixel_to_lat_lon(pixel_x, pixel_y, tile_x, tile_y, zoom):
     lat_min = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (tile_y + 1) / n))))
     
     # Convert pixel coordinates to lat/lon within tile
-    # Assuming 256x256 tile size
-    tile_size = 256
-    lon = lon_min + (pixel_x / tile_size) * (lon_max - lon_min)
-    lat = lat_max - (pixel_y / tile_size) * (lat_max - lat_min)
+    # Handle both 2D (width, height) and 3D (height, width, channels) image_size formats
+    if len(image_size) == 3:
+        # For numpy array shape: (height, width, channels)
+        tile_height, tile_width = image_size[0], image_size[1]
+    else:
+        # For tuple: (width, height)
+        tile_width, tile_height = image_size
+    
+    lon = lon_min + (pixel_x / tile_width) * (lon_max - lon_min)
+    lat = lat_max - (pixel_y / tile_height) * (lat_max - lat_min)
     
     return lat, lon
 
@@ -267,7 +273,7 @@ def reverse_geocode_coordinates(lat, lon):
             'confidence': 'Error'
         }
 
-def analyze_street_density(hotspots, tile_x, tile_y, zoom):
+def analyze_street_density(hotspots, tile_x, tile_y, zoom, image_size=(256, 256)):
     """Analyze traffic density per street by reverse geocoding hotspots"""
     street_analysis = []
     
@@ -282,8 +288,13 @@ def analyze_street_density(hotspots, tile_x, tile_y, zoom):
             hotspot['center_y'], 
             tile_x, 
             tile_y, 
-            zoom
+            zoom,
+            image_size
         )
+        
+        # Debug: Show coordinate conversion for first few hotspots
+        if i < 3:
+            st.write(f"Hotspot {i+1}: pixel({hotspot['center_x']}, {hotspot['center_y']}) -> lat/lon({lat:.6f}, {lon:.6f})")
         
         # Reverse geocode to get street name
         geocode_result = reverse_geocode_coordinates(lat, lon)
@@ -378,8 +389,8 @@ def estimate_cars_from_traffic_analysis(image_data, zoom_level):
 
 def get_traffic_flow_tile(longitude, latitude, zoom):
     # Try multiple zoom levels to find the best available traffic data
-    # Start with user's selected zoom, then try nearby levels if no data
-    zoom_levels = [zoom, min(zoom + 1, 16), max(zoom - 1, 8)]
+    # Start with higher zoom for precision, fall back to lower zoom if no data
+    zoom_levels = [min(zoom + 2, 16), zoom, max(zoom - 2, 8)]
     
     url = "https://atlas.microsoft.com/traffic/flow/tile/png"
     headers = {'subscription-key': subscription_key}
@@ -613,9 +624,6 @@ if __name__ == "__main__":
                 st.subheader("🚗 Street-Level Traffic Analysis")
                 st.write("Analyzing traffic density per street...")
                 
-                # Get tile coordinates for street analysis
-                tile_x, tile_y = deg2num(latitude, longitude, zoom)
-                
                 # Detect traffic hotspots
                 hotspots = detect_traffic_hotspots(analysis['pixel_data'], analysis['image_size'])
                 st.write(f"Found {len(hotspots)} traffic hotspots")
@@ -624,9 +632,15 @@ if __name__ == "__main__":
                     # Use the actual coordinates from the traffic flow tile
                     # These should match the traffic visualization
                     st.write(f"Using coordinates from traffic tile: zoom={actual_zoom}, tile=({actual_tile_x}, {actual_tile_y})")
+                    st.write(f"Image size for coordinate conversion: {analysis['image_size']}")
+                    
+                    # Debug: Show first hotspot coordinates
+                    if hotspots:
+                        first_hotspot = hotspots[0]
+                        st.write(f"First hotspot pixel coordinates: ({first_hotspot['center_x']}, {first_hotspot['center_y']})")
                     
                     with st.spinner("Reverse geocoding hotspots to get street names..."):
-                        street_analysis = analyze_street_density(hotspots, actual_tile_x, actual_tile_y, actual_zoom)
+                        street_analysis = analyze_street_density(hotspots, actual_tile_x, actual_tile_y, actual_zoom, analysis['image_size'])
                     
                     if street_analysis:
                         st.success(f"Successfully analyzed {len(street_analysis)} street segments")
