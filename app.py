@@ -120,6 +120,65 @@ def analyze_traffic_tile(image_data):
         'total_pixels': total_pixels
     }
 
+def estimate_cars_from_traffic_analysis(image_data, zoom_level):
+    """Estimate number of cars based on traffic analysis and zoom level"""
+    
+    # Get the traffic analysis
+    analysis = analyze_traffic_tile(image_data)
+    
+    # Load image to get actual dimensions
+    img = Image.open(io.BytesIO(image_data))
+    width, height = img.size
+    
+    # Calibration factors based on zoom level
+    # These are rough estimates and would need real-world calibration
+    zoom_factors = {
+        12: {'pixels_per_car': 60, 'road_coverage': 0.15},
+        13: {'pixels_per_car': 40, 'road_coverage': 0.20},
+        14: {'pixels_per_car': 30, 'road_coverage': 0.25},
+        15: {'pixels_per_car': 20, 'road_coverage': 0.30},
+        16: {'pixels_per_car': 15, 'road_coverage': 0.35},
+        17: {'pixels_per_car': 10, 'road_coverage': 0.40},
+        18: {'pixels_per_car': 8, 'road_coverage': 0.45},
+        19: {'pixels_per_car': 6, 'road_coverage': 0.50},
+        20: {'pixels_per_car': 4, 'road_coverage': 0.55},
+        21: {'pixels_per_car': 3, 'road_coverage': 0.60},
+        22: {'pixels_per_car': 2, 'road_coverage': 0.65}
+    }
+    
+    factor = zoom_factors.get(zoom_level, zoom_factors[18])
+    
+    # Calculate traffic pixels for each category
+    total_pixels = width * height
+    heavy_traffic_pixels = (analysis['heavy_traffic'] / 100) * total_pixels
+    moderate_traffic_pixels = (analysis['moderate_traffic'] / 100) * total_pixels
+    light_traffic_pixels = (analysis['light_traffic'] / 100) * total_pixels
+    
+    # Estimate cars based on traffic density and zoom level
+    # Heavy traffic: more cars per pixel (congested)
+    # Light traffic: fewer cars per pixel (free flowing)
+    heavy_cars = int(heavy_traffic_pixels / (factor['pixels_per_car'] * 0.7))  # More cars in heavy traffic
+    moderate_cars = int(moderate_traffic_pixels / factor['pixels_per_car'])
+    light_cars = int(light_traffic_pixels / (factor['pixels_per_car'] * 1.3))  # Fewer cars in light traffic
+    
+    total_estimated_cars = heavy_cars + moderate_cars + light_cars
+    
+    # Calculate confidence based on total traffic coverage
+    traffic_coverage = (heavy_traffic_pixels + moderate_traffic_pixels + light_traffic_pixels) / total_pixels
+    confidence = min(100, max(20, traffic_coverage * 200))  # 20-100% confidence
+    
+    return {
+        'estimated_total_cars': total_estimated_cars,
+        'heavy_traffic_cars': heavy_cars,
+        'moderate_traffic_cars': moderate_cars,
+        'light_traffic_cars': light_cars,
+        'confidence_percentage': round(confidence, 1),
+        'traffic_coverage': round(traffic_coverage * 100, 1),
+        'zoom_level': zoom_level,
+        'image_size': f"{width}x{height}",
+        'method': 'pixel_density_estimation'
+    }
+
 def get_traffic_flow_tile(longitude, latitude, zoom):
     # Convert lat/lon to tile coordinates
     x, y = deg2num(latitude, longitude, zoom)
@@ -240,7 +299,34 @@ if __name__ == "__main__":
             result = get_traffic_flow_tile(x, y, zoom)
 
             if result:
+                # Traffic analysis
                 analysis = analyze_traffic_tile(result)
+                st.subheader("Traffic Flow Analysis")
                 st.dataframe(pd.DataFrame([analysis]))
+                
+                # Car estimation
+                car_estimation = estimate_cars_from_traffic_analysis(result, zoom)
+                st.subheader("Car Estimation")
+                
+                # Display key metrics
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Total Cars", car_estimation['estimated_total_cars'])
+                with col2:
+                    st.metric("Heavy Traffic Cars", car_estimation['heavy_traffic_cars'])
+                with col3:
+                    st.metric("Moderate Traffic Cars", car_estimation['moderate_traffic_cars'])
+                with col4:
+                    st.metric("Light Traffic Cars", car_estimation['light_traffic_cars'])
+                
+                # Display detailed analysis
+                st.write(f"**Confidence:** {car_estimation['confidence_percentage']}%")
+                st.write(f"**Traffic Coverage:** {car_estimation['traffic_coverage']}% of image")
+                st.write(f"**Image Size:** {car_estimation['image_size']} pixels")
+                st.write(f"**Zoom Level:** {car_estimation['zoom_level']}")
+                
+                # Show detailed breakdown
+                st.subheader("Detailed Analysis")
+                st.dataframe(pd.DataFrame([car_estimation]))
     else:
         st.error("Please enter an address")
