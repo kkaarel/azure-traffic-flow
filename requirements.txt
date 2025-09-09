@@ -5,3 +5,4 @@ azure-core
 numpy
 Pillow
 pandas
+pydeck

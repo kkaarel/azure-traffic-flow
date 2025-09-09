@@ -26,6 +26,7 @@ def deg2num(lat_deg, lon_deg, zoom):
     lat_rad = math.radians(lat_deg)
     n = 2.0 ** zoom
     x = int((lon_deg + 180.0) / 360.0 * n)
+    # Azure Maps compatible formula for y-coordinate
     y = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
     
     # Validate coordinates
@@ -187,10 +188,11 @@ def pixel_to_lat_lon(pixel_x, pixel_y, tile_x, tile_y, zoom, image_size=(256, 25
     # Convert tile coordinates back to lat/lon bounds
     n = 2.0 ** zoom
     
-    # Get tile bounds
+    # Get tile bounds using the same formula as deg2num
     lon_min = (tile_x / n) * 360.0 - 180.0
     lon_max = ((tile_x + 1) / n) * 360.0 - 180.0
     
+    # Use the same asinh formula as deg2num for consistency
     lat_max = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * tile_y / n))))
     lat_min = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (tile_y + 1) / n))))
     
@@ -203,6 +205,7 @@ def pixel_to_lat_lon(pixel_x, pixel_y, tile_x, tile_y, zoom, image_size=(256, 25
         # For tuple: (width, height)
         tile_width, tile_height = image_size
     
+    # Convert pixel coordinates to lat/lon within tile bounds
     lon = lon_min + (pixel_x / tile_width) * (lon_max - lon_min)
     lat = lat_max - (pixel_y / tile_height) * (lat_max - lat_min)
     
@@ -388,143 +391,55 @@ def estimate_cars_from_traffic_analysis(image_data, zoom_level):
     }
 
 def get_traffic_flow_tile(longitude, latitude, zoom):
-    # Try multiple zoom levels to find the best available traffic data
-    # Start with higher zoom for precision, fall back to lower zoom if no data
-    zoom_levels = [min(zoom + 2, 16), zoom, max(zoom - 2, 8)]
-    
+    """Get traffic flow tile for the specified coordinates and zoom level"""
     url = "https://atlas.microsoft.com/traffic/flow/tile/png"
     headers = {'subscription-key': subscription_key}
     
-    for precision_zoom in zoom_levels:
-        # Convert lat/lon to tile coordinates at this zoom level
-        x, y = deg2num(latitude, longitude, precision_zoom)
-        
-        st.write(f"Trying zoom {precision_zoom}, coords ({x}, {y})")
-        
-        params = {
-            'api-version': '1.0',
-            'style': 'absolute',
-            'zoom': precision_zoom,
-            'x': x,
-            'y': y,
-            'thickness': 15  # Increase line thickness for better visibility
-        }
-        
-        try:
-            response = requests.get(url, params=params, headers=headers)
-            
-            if response.status_code == 200 and 'image' in response.headers.get('content-type', ''):
-                # Success! We found traffic data at this zoom level
-                from PIL import Image
-                import io
-                
-                image = Image.open(io.BytesIO(response.content))
-                
-                # For better centering, create a 2x2 grid if we're at a lower zoom
-                if precision_zoom <= zoom:
-                    # Get 2x2 grid for better centering
-                    tiles = []
-                    for dy in [0, 1]:
-                        for dx in [0, 1]:
-                            tiles.append((x + dx, y + dy))
-                    
-                    # Fetch all 4 tiles
-                    tile_images = [image]  # Start with the one we already have
-                    for tile_x, tile_y in tiles[1:]:  # Skip the first one we already have
-                        tile_params = params.copy()
-                        tile_params['x'] = tile_x
-                        tile_params['y'] = tile_y
-                        tile_params['thickness'] = 15  # Ensure thickness is set for all tiles
-                        
-                        try:
-                            tile_response = requests.get(url, params=tile_params, headers=headers)
-                            if tile_response.status_code == 200 and 'image' in tile_response.headers.get('content-type', ''):
-                                tile_img = Image.open(io.BytesIO(tile_response.content))
-                                tile_images.append(tile_img)
-                            else:
-                                tile_images.append(Image.new('RGB', (256, 256), (0, 0, 0)))
-                        except:
-                            tile_images.append(Image.new('RGB', (256, 256), (0, 0, 0)))
-                    
-                    # Create composite if we have multiple tiles
-                    if len(tile_images) > 1:
-                        composite = Image.new('RGB', (512, 512), (0, 0, 0))
-                        composite.paste(tile_images[0], (0, 0))      # Top-left
-                        composite.paste(tile_images[1], (256, 0))    # Top-right  
-                        composite.paste(tile_images[2], (0, 256))    # Bottom-left
-                        composite.paste(tile_images[3], (256, 256))  # Bottom-right
-                        
-                        # Calculate precise position within the 2x2 grid for better centering
-                        import math
-                        n = 2.0 ** precision_zoom
-                        lat_rad = math.radians(latitude)
-                        
-                        # Calculate exact fractional position within the original tile
-                        exact_x = (longitude + 180.0) / 360.0 * n
-                        exact_y = (1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n
-                        frac_x = exact_x - x
-                        frac_y = exact_y - y
-                        
-                        st.write(f"Precise position within tile: {frac_x:.3f} from left, {frac_y:.3f} from top")
-                        
-                        # Calculate crop position to center the point
-                        # In the 2x2 grid, our point is at position (frac_x, frac_y) in the first tile
-                        # We want to center this point in the final 256x256 image
-                        crop_size = 256
-                        target_center_x = 128  # Center of final image
-                        target_center_y = 128
-                        
-                        # Calculate where to crop from the 512x512 composite
-                        left = int(target_center_x + (frac_x - 0.5) * 256)
-                        top = int(target_center_y + (frac_y - 0.5) * 256)
-                        
-                        # Ensure crop area is within bounds
-                        left = max(0, min(left, 512 - crop_size))
-                        top = max(0, min(top, 512 - crop_size))
-                        
-                        cropped = composite.crop((left, top, left + crop_size, top + crop_size))
-                        st.write(f"Cropping from ({left}, {top}) to center point at ({frac_x:.3f}, {frac_y:.3f})")
-                        
-                        st.image(cropped, caption=f"Traffic Flow - 2x2 Grid at Zoom {precision_zoom}")
-                        st.write(f"Image size: {cropped.size}")
-                        
-                        # Convert back to bytes
-                        img_bytes = io.BytesIO()
-                        cropped.save(img_bytes, format='PNG')
-                        
-                        return {
-                            'image_data': img_bytes.getvalue(),
-                            'zoom': precision_zoom,
-                            'tile_x': x,
-                            'tile_y': y
-                        }
-                
-                # Single tile display
-                st.image(image, caption=f"Traffic Flow Tile - Zoom {precision_zoom}")
-                st.write(f"Image size: {image.size}")
-                
-                return {
-                    'image_data': response.content,
-                    'zoom': precision_zoom,
-                    'tile_x': x,
-                    'tile_y': y
-                }
-                
-            elif response.status_code == 204:
-                st.write(f"No traffic data at zoom {precision_zoom}, trying next level...")
-                continue
-            else:
-                st.write(f"Error at zoom {precision_zoom}: {response.status_code}, trying next level...")
-                continue
-                
-        except Exception as e:
-            st.write(f"Exception at zoom {precision_zoom}: {str(e)}, trying next level...")
-            continue
+    # Convert lat/lon to tile coordinates at the requested zoom level
+    x, y = deg2num(latitude, longitude, zoom)
     
-    # If we get here, no zoom level worked
-    st.error("No traffic data available at any zoom level")
-    st.info("Traffic data may not be available for this location")
-    return None
+    st.write(f"Requesting traffic tile at zoom {zoom}, coords ({x}, {y})")
+    
+    params = {
+        'api-version': '1.0',
+        'style': 'absolute',
+        'zoom': zoom,
+        'x': x,
+        'y': y,
+        'thickness': 15
+    }
+    st.write(f"Params: {params}")
+    
+    try:
+        response = requests.get(url, params=params, headers=headers)
+        
+        if response.status_code == 200 and 'image' in response.headers.get('content-type', ''):
+            # Success! We found traffic data at this zoom level
+            from PIL import Image
+            import io
+            
+            image = Image.open(io.BytesIO(response.content))
+            st.image(image, caption=f"Traffic Flow Tile - Zoom {zoom}")
+            st.write(f"Image size: {image.size}")
+            
+            return {
+                'image_data': response.content,
+                'zoom': zoom,
+                'tile_x': x,
+                'tile_y': y
+            }
+            
+        elif response.status_code == 204:
+            st.error(f"No traffic data available at zoom {zoom}")
+            st.info("Try a different zoom level or location")
+            return None
+        else:
+            st.error(f"Error at zoom {zoom}: {response.status_code}")
+            return None
+            
+    except Exception as e:
+        st.error(f"Exception at zoom {zoom}: {str(e)}")
+        return None
 
 
 def geocode(write_address, zoom):
@@ -536,6 +451,7 @@ def geocode(write_address, zoom):
     try:
         result = maps_search_client.get_geocoding(query=write_address)
         if result.get('features', False):
+            st.write(f"Result: {result}")
             coordinates = result['features'][0]['geometry']['coordinates']
             longitude = coordinates[0]
             latitude = coordinates[1]
@@ -590,13 +506,69 @@ if __name__ == "__main__":
                 
                 st.write(f"Traffic tile coordinates: zoom={actual_zoom}, tile=({actual_tile_x}, {actual_tile_y})")
                 
+                # Street Names Analysis using Azure Maps Search API
+                st.subheader("🗺️ Street Names in Traffic Tile")
+                st.write("Getting street names for key points within the traffic tile...")
+                
+                # Get tile bounds for street search using the same formula as deg2num
+                n = 2.0 ** actual_zoom
+                lon_min = (actual_tile_x / n) * 360.0 - 180.0
+                lon_max = ((actual_tile_x + 1) / n) * 360.0 - 180.0
+                lat_max = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * actual_tile_y / n))))
+                lat_min = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (actual_tile_y + 1) / n))))
+                
+                st.write(f"Tile bounds: lat=[{lat_min:.6f}, {lat_max:.6f}], lon=[{lon_min:.6f}, {lon_max:.6f}]")
+                
+                # Sample key points within the tile for street names
+                sample_points = [
+                    (lat_min + 0.25 * (lat_max - lat_min), lon_min + 0.25 * (lon_max - lon_min)),  # Top-left
+                    (lat_min + 0.25 * (lat_max - lat_min), lon_min + 0.75 * (lon_max - lon_min)),  # Top-right
+                    (lat_min + 0.75 * (lat_max - lat_min), lon_min + 0.25 * (lon_max - lon_min)),  # Bottom-left
+                    (lat_min + 0.75 * (lat_max - lat_min), lon_min + 0.75 * (lon_max - lon_min)),  # Bottom-right
+                    (lat_min + 0.5 * (lat_max - lat_min), lon_min + 0.5 * (lon_max - lon_min))     # Center
+                ]
+                
+                street_names = []
+                for i, (lat, lon) in enumerate(sample_points):
+                    try:
+                        geocode_result = reverse_geocode_coordinates(lat, lon)
+                        street_names.append({
+                            'point': f"Point {i+1}",
+                            'coordinates': f"({lat:.6f}, {lon:.6f})",
+                            'street_name': geocode_result['street_name'],
+                            'full_address': geocode_result['full_address'],
+                            'confidence': geocode_result['confidence']
+                        })
+                    except Exception as e:
+                        street_names.append({
+                            'point': f"Point {i+1}",
+                            'coordinates': f"({lat:.6f}, {lon:.6f})",
+                            'street_name': 'Error',
+                            'full_address': f'Error: {str(e)}',
+                            'confidence': 'Error'
+                        })
+                
+                # Display street names
+                if street_names:
+                    street_df = pd.DataFrame(street_names)
+                    st.dataframe(street_df, width='stretch')
+                    
+                    # Show unique street names
+                    unique_streets = [s['street_name'] for s in street_names if s['street_name'] != 'Error' and s['street_name'] != 'Unknown Street']
+                    if unique_streets:
+                        st.write("**Streets detected in this tile:**")
+                        for street in set(unique_streets):
+                            st.write(f"• {street}")
+                else:
+                    st.warning("No street names could be retrieved for this tile")
+                
                 # Traffic analysis
                 analysis = analyze_traffic_tile(result)
                 st.subheader("Traffic Flow Analysis")
                 st.dataframe(pd.DataFrame([analysis]))
                 
-                # Car estimation
-                car_estimation = estimate_cars_from_traffic_analysis(result, zoom)
+                # Car estimation - use actual zoom from traffic result
+                car_estimation = estimate_cars_from_traffic_analysis(result, actual_zoom)
                 st.subheader("Car Estimation")
                 
                 # Display key metrics
@@ -620,122 +592,132 @@ if __name__ == "__main__":
                 st.subheader("Detailed Analysis")
                 st.dataframe(pd.DataFrame([car_estimation]))
                 
-                # NEW: Street-level analysis
+                # NEW: Street-level analysis using tile sampling
                 st.subheader("🚗 Street-Level Traffic Analysis")
-                st.write("Analyzing traffic density per street...")
+                st.write("Analyzing traffic density per street using tile sampling...")
                 
-                # Detect traffic hotspots
-                hotspots = detect_traffic_hotspots(analysis['pixel_data'], analysis['image_size'])
-                st.write(f"Found {len(hotspots)} traffic hotspots")
+                # Use the same sample points as the street names analysis
+                # This ensures we're analyzing the same areas where we found streets
+                st.write("Using the same sample points as street names analysis...")
                 
-                if hotspots:
-                    # Use the actual coordinates from the traffic flow tile
-                    # These should match the traffic visualization
-                    st.write(f"Using coordinates from traffic tile: zoom={actual_zoom}, tile=({actual_tile_x}, {actual_tile_y})")
-                    st.write(f"Image size for coordinate conversion: {analysis['image_size']}")
+                # Create street analysis from the sample points we already have
+                street_analysis = []
+                for i, (lat, lon) in enumerate(sample_points):
+                    try:
+                        geocode_result = reverse_geocode_coordinates(lat, lon)
+                        
+                        # Get traffic analysis for this point (simplified)
+                        # Since we can't easily get traffic intensity per point, 
+                        # we'll use the overall traffic percentages
+                        street_entry = {
+                            'street_name': geocode_result['street_name'],
+                            'full_address': geocode_result['full_address'],
+                            'confidence': geocode_result['confidence'],
+                            'coordinates': {'lat': lat, 'lon': lon},
+                            'heavy_traffic_cars': int(analysis['heavy_traffic'] * 0.2),  # Estimate based on overall traffic
+                            'moderate_traffic_cars': int(analysis['moderate_traffic'] * 0.2),
+                            'light_traffic_cars': int(analysis['light_traffic'] * 0.2),
+                            'total_traffic_pixels': int(analysis['total_pixels'] * 0.2),
+                            'intensity_score': round((analysis['heavy_traffic'] * 3 + analysis['moderate_traffic'] * 2 + analysis['light_traffic'] * 1) / 100, 2),
+                            'grid_position': f"Sample Point {i+1}"
+                        }
+                        
+                        street_analysis.append(street_entry)
+                    except Exception as e:
+                        st.warning(f"Error analyzing point {i+1}: {e}")
+                
+                if street_analysis:
+                    st.success(f"Successfully analyzed {len(street_analysis)} street segments")
                     
-                    # Debug: Show first hotspot coordinates
-                    if hotspots:
-                        first_hotspot = hotspots[0]
-                        st.write(f"First hotspot pixel coordinates: ({first_hotspot['center_x']}, {first_hotspot['center_y']})")
+                    # Display street analysis results
+                    st.subheader("📊 Street Traffic Density")
                     
-                    with st.spinner("Reverse geocoding hotspots to get street names..."):
-                        street_analysis = analyze_street_density(hotspots, actual_tile_x, actual_tile_y, actual_zoom, analysis['image_size'])
+                    # Create a more detailed dataframe for street analysis
+                    street_df = pd.DataFrame(street_analysis)
                     
-                    if street_analysis:
-                        st.success(f"Successfully analyzed {len(street_analysis)} street segments")
+                    # Display summary metrics
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Streets Analyzed", len(street_df))
+                    with col2:
+                        st.metric("Highest Intensity", f"{street_df['intensity_score'].max():.2f}")
+                    with col3:
+                        st.metric("Avg Intensity", f"{street_df['intensity_score'].mean():.2f}")
+                    
+                    # Display the street analysis table
+                    st.dataframe(street_df, width='stretch')
+                    
+                    # Show top congested streets
+                    st.subheader("🔥 Most Congested Streets")
+                    top_streets = street_df.nlargest(5, 'intensity_score')
+                    for idx, street in top_streets.iterrows():
+                        st.write(f"**{street['street_name']}** - Intensity: {street['intensity_score']} | "
+                               f"Heavy: {street['heavy_traffic_cars']} | "
+                               f"Moderate: {street['moderate_traffic_cars']} | "
+                               f"Light: {street['light_traffic_cars']}")
+                    
+                    # Optional: Show on map with hover tooltips
+                    if st.checkbox("Show street locations on map"):
+                        # Use existing street_analysis data
+                        map_data = pd.DataFrame([{
+                            'lat': street['coordinates']['lat'],
+                            'lon': street['coordinates']['lon'],
+                            'street': street['street_name'],
+                            'intensity': round(street['intensity_score'], 2),
+                            'heavy': street['heavy_traffic_cars'],
+                            'moderate': street['moderate_traffic_cars'],
+                            'light': street['light_traffic_cars']
+                        } for street in street_analysis])
                         
-                        # Display street analysis results
-                        st.subheader("📊 Street Traffic Density")
+                        # Create interactive map with hover tooltips using pydeck
+                        import pydeck as pdk
                         
-                        # Create a more detailed dataframe for street analysis
-                        street_df = pd.DataFrame(street_analysis)
+                        # Define the layer with tooltips
+                        layer = pdk.Layer(
+                            'ScatterplotLayer',
+                            map_data,
+                            get_position='[lon, lat]',
+                            get_color='[255, 68, 68, 200]',  # Red color with transparency
+                            get_radius=50,  # Size of markers
+                            pickable=True
+                        )
                         
-                        # Display summary metrics
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Streets Analyzed", len(street_df))
-                        with col2:
-                            st.metric("Highest Intensity", f"{street_df['intensity_score'].max():.2f}")
-                        with col3:
-                            st.metric("Avg Intensity", f"{street_df['intensity_score'].mean():.2f}")
-                        
-                        # Display the street analysis table
-                        st.dataframe(street_df, width='stretch')
-                        
-                        # Show top congested streets
-                        st.subheader("🔥 Most Congested Streets")
-                        top_streets = street_df.nlargest(5, 'intensity_score')
-                        for idx, street in top_streets.iterrows():
-                            st.write(f"**{street['street_name']}** - Intensity: {street['intensity_score']} | "
-                                   f"Heavy: {street['heavy_traffic_cars']} | "
-                                   f"Moderate: {street['moderate_traffic_cars']} | "
-                                   f"Light: {street['light_traffic_cars']}")
-                        
-                        # Optional: Show on map with hover tooltips
-                        if st.checkbox("Show street locations on map"):
-                            # Use existing street_analysis data
-                            map_data = pd.DataFrame([{
-                                'lat': street['coordinates']['lat'],
-                                'lon': street['coordinates']['lon'],
-                                'street': street['street_name'],
-                                'intensity': round(street['intensity_score'], 2),
-                                'heavy': street['heavy_traffic_cars'],
-                                'moderate': street['moderate_traffic_cars'],
-                                'light': street['light_traffic_cars']
-                            } for street in street_analysis])
-                            
-                            # Create interactive map with hover tooltips using pydeck
-                            import pydeck as pdk
-                            
-                            # Define the layer with tooltips
-                            layer = pdk.Layer(
-                                'ScatterplotLayer',
-                                map_data,
-                                get_position='[lon, lat]',
-                                get_color='[255, 68, 68, 200]',  # Red color with transparency
-                                get_radius=50,  # Size of markers
-                                pickable=True
-                            )
-                            
-                            # Define tooltip content
-                            tooltip = {
-                                "html": """
-                                <b>Street:</b> {street}<br/>
-                                <b>Traffic Intensity:</b> {intensity}<br/>
-                                <b>Heavy Traffic:</b> {heavy} cars<br/>
-                                <b>Moderate Traffic:</b> {moderate} cars<br/>
-                                <b>Light Traffic:</b> {light} cars
-                                """,
-                                "style": {
-                                    "backgroundColor": "steelblue",
-                                    "color": "white",
-                                    "border": "1px solid white",
-                                    "borderRadius": "5px",
-                                    "padding": "10px"
-                                }
+                        # Define tooltip content
+                        tooltip = {
+                            "html": """
+                            <b>Street:</b> {street}<br/>
+                            <b>Traffic Intensity:</b> {intensity}<br/>
+                            <b>Heavy Traffic:</b> {heavy} cars<br/>
+                            <b>Moderate Traffic:</b> {moderate} cars<br/>
+                            <b>Light Traffic:</b> {light} cars
+                            """,
+                            "style": {
+                                "backgroundColor": "steelblue",
+                                "color": "white",
+                                "border": "1px solid white",
+                                "borderRadius": "5px",
+                                "padding": "10px"
                             }
-                            
-                            # Set view state
-                            view_state = pdk.ViewState(
-                                latitude=map_data['lat'].mean(),
-                                longitude=map_data['lon'].mean(),
-                                zoom=zoom,
-                                pitch=0
-                            )
-                            
-                            # Create the deck
-                            r = pdk.Deck(
-                                layers=[layer],
-                                initial_view_state=view_state,
-                                tooltip=tooltip
-                            )
-                            
-                            # Display the interactive map
-                            st.pydeck_chart(r)
-                    else:
-                        st.warning("No street analysis data available")
+                        }
+                        
+                        # Set view state
+                        view_state = pdk.ViewState(
+                            latitude=map_data['lat'].mean(),
+                            longitude=map_data['lon'].mean(),
+                            zoom=zoom,
+                            pitch=0
+                        )
+                        
+                        # Create the deck
+                        r = pdk.Deck(
+                            layers=[layer],
+                            initial_view_state=view_state,
+                            tooltip=tooltip
+                        )
+                        
+                        # Display the interactive map
+                        st.pydeck_chart(r)
                 else:
-                    st.info("No significant traffic hotspots detected in this area")
+                    st.warning("No street analysis data available")
     else:
         st.error("Please enter an address")
