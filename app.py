@@ -398,7 +398,7 @@ def get_traffic_flow_tile(longitude, latitude, zoom):
     # Convert lat/lon to tile coordinates at the requested zoom level
     x, y = deg2num(latitude, longitude, zoom)
     
-    st.write(f"Requesting traffic tile at zoom {zoom}, coords ({x}, {y})")
+    #st.write(f"Requesting traffic tile at zoom {zoom}, coords ({x}, {y})")
     
     params = {
         'api-version': '1.0',
@@ -408,7 +408,7 @@ def get_traffic_flow_tile(longitude, latitude, zoom):
         'y': y,
         'thickness': 15
     }
-    st.write(f"Params: {params}")
+    #st.write(f"Params: {params}")
     
     try:
         response = requests.get(url, params=params, headers=headers)
@@ -420,7 +420,7 @@ def get_traffic_flow_tile(longitude, latitude, zoom):
             
             image = Image.open(io.BytesIO(response.content))
             st.image(image, caption=f"Traffic Flow Tile - Zoom {zoom}")
-            st.write(f"Image size: {image.size}")
+            #st.write(f"Image size: {image.size}")
             
             return {
                 'image_data': response.content,
@@ -451,7 +451,7 @@ def geocode(write_address, zoom):
     try:
         result = maps_search_client.get_geocoding(query=write_address)
         if result.get('features', False):
-            st.write(f"Result: {result}")
+            #st.write(f"Result: {result}")
             coordinates = result['features'][0]['geometry']['coordinates']
             longitude = coordinates[0]
             latitude = coordinates[1]
@@ -504,7 +504,7 @@ if __name__ == "__main__":
                 actual_tile_x = traffic_result['tile_x']
                 actual_tile_y = traffic_result['tile_y']
                 
-                st.write(f"Traffic tile coordinates: zoom={actual_zoom}, tile=({actual_tile_x}, {actual_tile_y})")
+                #st.write(f"Traffic tile coordinates: zoom={actual_zoom}, tile=({actual_tile_x}, {actual_tile_y})")
                 
                 # Street Names Analysis using Azure Maps Search API
                 st.subheader("🗺️ Street Names in Traffic Tile")
@@ -517,7 +517,7 @@ if __name__ == "__main__":
                 lat_max = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * actual_tile_y / n))))
                 lat_min = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (actual_tile_y + 1) / n))))
                 
-                st.write(f"Tile bounds: lat=[{lat_min:.6f}, {lat_max:.6f}], lon=[{lon_min:.6f}, {lon_max:.6f}]")
+                #st.write(f"Tile bounds: lat=[{lat_min:.6f}, {lat_max:.6f}], lon=[{lon_min:.6f}, {lon_max:.6f}]")
                 
                 # Sample key points within the tile for street names
                 sample_points = [
@@ -555,10 +555,10 @@ if __name__ == "__main__":
                     
                     # Show unique street names
                     unique_streets = [s['street_name'] for s in street_names if s['street_name'] != 'Error' and s['street_name'] != 'Unknown Street']
-                    if unique_streets:
-                        st.write("**Streets detected in this tile:**")
-                        for street in set(unique_streets):
-                            st.write(f"• {street}")
+                    #if unique_streets:
+                        #st.write("**Streets detected in this tile:**")
+                        #for street in set(unique_streets):
+                         #   st.write(f"• {street}")
                 else:
                     st.warning("No street names could be retrieved for this tile")
                 
